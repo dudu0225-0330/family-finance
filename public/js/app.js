@@ -107,7 +107,7 @@ function initMonthSelector() {
 }
 function changeYear(y) {
   S.year = y;
-  S.yearly = null; S.yearlyCf = null;
+  S.trends = null; S.yearly = null; S.yearlyCf = null;
   updateMonthLabel();
   updateMonthGrid();
   // 异步拉新一年的趋势数据, 更新月份点的"有数据"标记
@@ -135,12 +135,16 @@ function updateMonthGrid() {
 }
 async function loadMonthData() {
   const c = $('content');
+  const tabAtStart = S.tab;
+  const monthAtStart = S.month;
   c.innerHTML = '<div class="loading-spinner">加载中...</div>';
   try {
     const [sum, recs] = await Promise.all([
       API.summary(S.year, S.month),
       API.records(S.year, S.month, S.user)
     ]);
+    // 守卫: 用户已切换 Tab 或月份就不渲染 (避免异步结果污染其他页面)
+    if (S.tab !== tabAtStart || S.month !== monthAtStart) return;
     S.summary = sum;
     S.records = recs;
     if (S.tab === 'dashboard') renderDashboard();
@@ -189,9 +193,10 @@ function renderDashboard() {
 /* === Trend === */
 async function renderTrend() {
   const c = $('content');
+  const tabAtStart = S.tab;
   c.innerHTML = '<div class="loading-spinner">加载图表...</div>';
   try {
-    if (!S.trends) S.trends = await API.trends(S.year);
+    if (!S.trends || S.trends.year !== S.year) S.trends = await API.trends(S.year);
     const t = S.trends;
     const s = S.summary;
     const mIdx = S.month - 1;
@@ -272,6 +277,9 @@ async function renderTrend() {
       </div>
     `;
 
+    // 守卫: 用户已切换 Tab 就不继续绘制图表 (避免图表实例覆盖其他页面)
+    if (S.tab !== tabAtStart) return;
+
     // Line chart
     destroyChart('line'); destroyChart('aPie'); destroyChart('lPie');
     const lc = new Chart($('trend-line'), {
@@ -343,9 +351,10 @@ async function renderTrend() {
 /* === Input === */
 async function renderInput() {
   const c = $('content');
+  const tabAtStart = S.tab;
   c.innerHTML = '<div class="loading-spinner">加载...</div>';
   try {
-    if (!S.records) S.records = await API.records(S.year, S.month, S.user);
+    if (!S.records || S.records.length === 0) S.records = await API.records(S.year, S.month, S.user);
     const recs = {};
     (S.records || []).forEach(r => { recs[r.section+'|'+r.category+'|'+r.item_name] = r.amount });
 
@@ -406,6 +415,8 @@ async function renderInput() {
     html += '</div>';
 
     html += `<div class="save-bar"><button onclick="saveInput()">保存</button></div>`;
+    // 守卫: 用户已切换 Tab 就不渲染 (避免表单覆盖其他页面)
+    if (S.tab !== tabAtStart) return;
     c.innerHTML = html;
 
     // Update totals on input
@@ -486,11 +497,32 @@ window.saveInput = async function() {
 /* === History === */
 async function renderHistory() {
   const c = $('content');
+  const tabAtStart = S.tab;
+  const yearAtStart = S.year;
   c.innerHTML = '<div class="loading-spinner">加载...</div>';
   try {
-    if (!S.trends) S.trends = await API.trends(S.year);
-    const t = S.trends;
-    let html = `<div style="font-size:13px;color:#888780;text-align:center;margin-bottom:16px">${S.year}年月度记录</div>`;
+    // 并行加载所需数据 (性能优化)
+    const fetchTrends = (!S.trends || S.trends.year !== S.year);
+    const fetchYearly = (!S.yearly || S.yearly.year !== S.year);
+    const fetchYearlyCf = (!S.yearlyCf || S.yearlyCf.year !== S.year);
+    const [t, allRecs, y, cf] = await Promise.all([
+      fetchTrends ? API.trends(S.year) : Promise.resolve(S.trends),
+      API.records(S.year, S.month, ''),
+      fetchYearly ? API.yearly(S.year) : Promise.resolve(S.yearly),
+      fetchYearlyCf ? API.yearlyCashflow(S.year) : Promise.resolve(S.yearlyCf)
+    ]);
+
+    // 守卫: 用户已切换 Tab 或年份就不渲染
+    if (S.tab !== tabAtStart || S.year !== yearAtStart) return;
+
+    S.trends = t;
+    S.yearly = y;
+    S.yearlyCf = cf;
+
+    let html = '';
+
+    // === 月度记录列表 ===
+    html += `<div class="sec-title">${S.year}年月度记录</div>`;
     html += '<div class="hist-list">';
     let hasAny = false;
     for (let m = 12; m >= 1; m--) {
@@ -507,12 +539,11 @@ async function renderHistory() {
     html += '</div>';
     if (!hasAny) html += '<div class="empty">暂无历史记录，先去录入页填点数据吧</div>';
 
-    // 年度总结
-    S.yearly = await API.yearly(S.year);
-    const y = S.yearly;
-    S.yearlyCf = await API.yearlyCashflow(S.year);
-    const cf = S.yearlyCf;
+    // === 月度家庭明细 (新增) ===
+    html += `<div class="sec-title">${S.month}月 · 家庭明细（两人合计）</div>`;
+    html += buildFamilyMonthDetail(allRecs, S.templates);
 
+    // === 年度财务总结 ===
     const ch = y.changes;
     const fmtCh = (v) => {
       const sign = v >= 0 ? '+' : '';
@@ -535,7 +566,7 @@ async function renderHistory() {
       </div>
     `;
 
-    // 年度收入支出
+    // === 年度收入支出 ===
     const incomeItems = Object.entries(cf.income);
     const expenseItems = Object.entries(cf.expense);
     html += `<div class="sec-title">${S.year}年 · 年度收入支出</div>`;
@@ -561,8 +592,177 @@ async function renderHistory() {
     }
     html += `</div>`;
 
+    // === 年度家庭明细 (新增) - 12月资产负债快照 + 全年收支累计 ===
+    // 12月记录 = 年末资产负债快照
+    let decRecs;
+    if (S.month === 12) {
+      decRecs = allRecs; // 当前就是12月，复用
+    } else {
+      decRecs = await API.records(S.year, 12, '');
+      // 再次守卫
+      if (S.tab !== tabAtStart || S.year !== yearAtStart) return;
+    }
+    html += `<div class="sec-title">${S.year}年 · 全年家庭明细</div>`;
+    html += buildFamilyYearDetail(decRecs, cf, S.templates);
+
     c.innerHTML = html;
   } catch(e) { console.error(e); c.innerHTML = '<div class="empty">加载失败</div>' }
+}
+
+/* === Family Detail Builders === */
+// 给定某月所有记录（两人合计），生成家庭明细 HTML（资产负债 + 现金流两张表）
+function buildFamilyMonthDetail(records, templates) {
+  // 按 section/category/item_name 聚合
+  const agg = {};
+  (records || []).forEach(r => {
+    if (!agg[r.section]) agg[r.section] = {};
+    if (!agg[r.section][r.category]) agg[r.section][r.category] = {};
+    if (!agg[r.section][r.category][r.item_name]) agg[r.section][r.category][r.item_name] = 0;
+    agg[r.section][r.category][r.item_name] += Number(r.amount);
+  });
+
+  let html = '';
+
+  // ===== 家庭资产负债表 =====
+  html += '<div class="yearly-table yt-3col">';
+  html += '<div class="yt-head"><div class="yt-c">分类</div><div class="yt-c">项目</div><div class="yt-c">金额</div></div>';
+  let totalAssets = 0, totalLiab = 0, hasBal = false;
+  BAL_CATS.forEach(cat => {
+    const items = templates.filter(t => t.section === 'balance' && t.category === cat);
+    let subTotal = 0, catHas = false;
+    items.forEach(t => {
+      const val = (agg.balance && agg.balance[cat] && agg.balance[cat][t.item_name]) || 0;
+      subTotal += val;
+      if (val > 0) {
+        catHas = true; hasBal = true;
+        html += `<div class="yt-row"><div class="yt-c">${CAT[cat]}</div><div class="yt-c">${t.item_name}</div><div class="yt-c">¥${fmt(val)}</div></div>`;
+      }
+    });
+    if (catHas) {
+      html += `<div class="yt-row total"><div class="yt-c">${CAT[cat]}小计</div><div class="yt-c"></div><div class="yt-c">¥${fmt(subTotal)}</div></div>`;
+    }
+    if (cat !== 'mortgage' && cat !== 'other_debt') totalAssets += subTotal;
+    else totalLiab += subTotal;
+  });
+  if (hasBal) {
+    html += `<div class="yt-row total"><div class="yt-c" style="color:${COLORS.teal}">资产合计</div><div class="yt-c"></div><div class="yt-c" style="color:${COLORS.teal}">¥${fmt(totalAssets)}</div></div>`;
+    html += `<div class="yt-row total"><div class="yt-c" style="color:${COLORS.coral}">负债合计</div><div class="yt-c"></div><div class="yt-c" style="color:${COLORS.coral}">¥${fmt(totalLiab)}</div></div>`;
+    html += `<div class="yt-row total"><div class="yt-c" style="color:${COLORS.purple}">净资产</div><div class="yt-c"></div><div class="yt-c" style="color:${COLORS.purple}">¥${fmt(totalAssets - totalLiab)}</div></div>`;
+  } else {
+    html += '<div class="yt-row"><div class="yt-c" style="grid-column:1/-1;text-align:center;color:#b4b2a9">暂无资产负债数据</div></div>';
+  }
+  html += '</div>';
+
+  // ===== 家庭现金流表 =====
+  html += '<div class="yearly-table yt-3col" style="margin-top:14px">';
+  html += '<div class="yt-head"><div class="yt-c">分类</div><div class="yt-c">项目</div><div class="yt-c">金额</div></div>';
+  let totalIncome = 0, totalExpense = 0, hasFlow = false;
+  FLOW_CATS.forEach(cat => {
+    const items = templates.filter(t => t.section === 'cashflow' && t.category === cat);
+    let subTotal = 0, catHas = false;
+    items.forEach(t => {
+      const val = (agg.cashflow && agg.cashflow[cat] && agg.cashflow[cat][t.item_name]) || 0;
+      subTotal += val;
+      if (val > 0) {
+        catHas = true; hasFlow = true;
+        html += `<div class="yt-row"><div class="yt-c">${CAT[cat]}</div><div class="yt-c">${t.item_name}</div><div class="yt-c">¥${fmt(val)}</div></div>`;
+      }
+    });
+    if (catHas) {
+      html += `<div class="yt-row total"><div class="yt-c">${CAT[cat]}小计</div><div class="yt-c"></div><div class="yt-c">¥${fmt(subTotal)}</div></div>`;
+    }
+    if (cat === 'income') totalIncome = subTotal; else totalExpense = subTotal;
+  });
+  if (hasFlow) {
+    const surplus = totalIncome - totalExpense;
+    const sColor = surplus >= 0 ? COLORS.purple : COLORS.red;
+    html += `<div class="yt-row total"><div class="yt-c" style="color:${sColor}">本月结余</div><div class="yt-c"></div><div class="yt-c" style="color:${sColor}">¥${fmt(surplus)}</div></div>`;
+    if (totalIncome > 0) {
+      const rate = Math.round(surplus / totalIncome * 100);
+      html += `<div class="yt-row"><div class="yt-c">储蓄率</div><div class="yt-c"></div><div class="yt-c">${rate}%</div></div>`;
+    }
+  } else {
+    html += '<div class="yt-row"><div class="yt-c" style="grid-column:1/-1;text-align:center;color:#b4b2a9">暂无收支数据</div></div>';
+  }
+  html += '</div>';
+
+  return html;
+}
+
+// 给定12月所有记录 + 全年收支累计，生成年度家庭明细 HTML
+function buildFamilyYearDetail(decRecs, cf, templates) {
+  // 聚合12月资产负债（年末快照）
+  const agg = {};
+  (decRecs || []).forEach(r => {
+    if (r.section !== 'balance') return;
+    if (!agg[r.category]) agg[r.category] = {};
+    if (!agg[r.category][r.item_name]) agg[r.category][r.item_name] = 0;
+    agg[r.category][r.item_name] += Number(r.amount);
+  });
+
+  let html = '';
+
+  // ===== 年末资产负债快照 =====
+  html += '<div class="yearly-table yt-3col">';
+  html += '<div class="yt-head"><div class="yt-c">分类</div><div class="yt-c">项目</div><div class="yt-c">年末值</div></div>';
+  let totalAssets = 0, totalLiab = 0, hasBal = false;
+  BAL_CATS.forEach(cat => {
+    const items = templates.filter(t => t.section === 'balance' && t.category === cat);
+    let subTotal = 0, catHas = false;
+    items.forEach(t => {
+      const val = (agg[cat] && agg[cat][t.item_name]) || 0;
+      subTotal += val;
+      if (val > 0) {
+        catHas = true; hasBal = true;
+        html += `<div class="yt-row"><div class="yt-c">${CAT[cat]}</div><div class="yt-c">${t.item_name}</div><div class="yt-c">¥${fmt(val)}</div></div>`;
+      }
+    });
+    if (catHas) {
+      html += `<div class="yt-row total"><div class="yt-c">${CAT[cat]}小计</div><div class="yt-c"></div><div class="yt-c">¥${fmt(subTotal)}</div></div>`;
+    }
+    if (cat !== 'mortgage' && cat !== 'other_debt') totalAssets += subTotal;
+    else totalLiab += subTotal;
+  });
+  if (hasBal) {
+    html += `<div class="yt-row total"><div class="yt-c" style="color:${COLORS.teal}">资产合计</div><div class="yt-c"></div><div class="yt-c" style="color:${COLORS.teal}">¥${fmt(totalAssets)}</div></div>`;
+    html += `<div class="yt-row total"><div class="yt-c" style="color:${COLORS.coral}">负债合计</div><div class="yt-c"></div><div class="yt-c" style="color:${COLORS.coral}">¥${fmt(totalLiab)}</div></div>`;
+    html += `<div class="yt-row total"><div class="yt-c" style="color:${COLORS.purple}">净资产</div><div class="yt-c"></div><div class="yt-c" style="color:${COLORS.purple}">¥${fmt(totalAssets - totalLiab)}</div></div>`;
+  } else {
+    html += '<div class="yt-row"><div class="yt-c" style="grid-column:1/-1;text-align:center;color:#b4b2a9">12月暂无资产负债数据</div></div>';
+  }
+  html += '</div>';
+
+  // ===== 全年收支累计 =====
+  html += '<div class="yearly-table yt-3col" style="margin-top:14px">';
+  html += '<div class="yt-head"><div class="yt-c">分类</div><div class="yt-c">项目</div><div class="yt-c">全年合计</div></div>';
+  const incomeItems = Object.entries(cf.income);
+  const expenseItems = Object.entries(cf.expense);
+  if (incomeItems.length === 0 && expenseItems.length === 0) {
+    html += '<div class="yt-row"><div class="yt-c" style="grid-column:1/-1;text-align:center;color:#b4b2a9">暂无收支数据</div></div>';
+  } else {
+    if (incomeItems.length > 0) {
+      incomeItems.forEach(([name, amt]) => {
+        html += `<div class="yt-row"><div class="yt-c">${CAT.income}</div><div class="yt-c">${name}</div><div class="yt-c" style="color:${COLORS.teal}">¥${fmt(amt)}</div></div>`;
+      });
+      html += `<div class="yt-row total"><div class="yt-c">${CAT.income}小计</div><div class="yt-c"></div><div class="yt-c" style="color:${COLORS.teal}">¥${fmt(cf.totalIncome)}</div></div>`;
+    }
+    if (expenseItems.length > 0) {
+      expenseItems.forEach(([name, amt]) => {
+        html += `<div class="yt-row"><div class="yt-c">${CAT.expense}</div><div class="yt-c">${name}</div><div class="yt-c" style="color:${COLORS.red}">¥${fmt(amt)}</div></div>`;
+      });
+      html += `<div class="yt-row total"><div class="yt-c">${CAT.expense}小计</div><div class="yt-c"></div><div class="yt-c" style="color:${COLORS.red}">¥${fmt(cf.totalExpense)}</div></div>`;
+    }
+    const surplus = cf.totalIncome - cf.totalExpense;
+    const sColor = surplus >= 0 ? COLORS.purple : COLORS.red;
+    html += `<div class="yt-row total"><div class="yt-c" style="color:${sColor}">全年结余</div><div class="yt-c"></div><div class="yt-c" style="color:${sColor}">¥${fmt(surplus)}</div></div>`;
+    if (cf.totalIncome > 0) {
+      const rate = Math.round(surplus / cf.totalIncome * 100);
+      html += `<div class="yt-row"><div class="yt-c">储蓄率</div><div class="yt-c"></div><div class="yt-c">${rate}%</div></div>`;
+    }
+  }
+  html += '</div>';
+
+  return html;
 }
 
 /* === Settings === */
