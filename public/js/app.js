@@ -11,6 +11,7 @@ const S = {
   records: null,
   charts: {},
   yearly: null,
+  yearlyCf: null,
 };
 
 const CAT = {
@@ -826,43 +827,51 @@ window.changePwd = function() {
   };
 };
 
+/* === Excel Export === */
+// 列宽辅助: ws['!cols'] 控制导出 Excel 的列宽
+function setCols(ws, widths){ ws['!cols'] = widths.map(w => ({wch:w})); return ws }
+
 window.exportExcel = async function(type) {
   toast('正在生成...');
   try {
+    const wb = XLSX.utils.book_new();
     if (type === 'month') {
-      const [allRecs] = await Promise.all([API.records(S.year, S.month, '')]);
-      const wb = XLSX.utils.book_new();
+      // 当月导出: 猪猪 + 嘟嘟 + 家庭汇总 + 家庭明细 (4 sheets)
+      const [allRecs, sum] = await Promise.all([
+        API.records(S.year, S.month, ''),
+        S.summary ? Promise.resolve(S.summary) : API.summary(S.year, S.month)
+      ]);
       ['猪猪','嘟嘟'].forEach(user => {
         const userRecs = allRecs.filter(r => r.user_name === user);
-        wb.Sheets[user] = buildSheet(userRecs, S.templates);
-        wb.SheetNames.push(user);
+        XLSX.utils.book_append_sheet(wb, buildSheet(userRecs, S.templates), user);
       });
-      const sum = S.summary;
-      wb.Sheets['家庭汇总'] = buildSummarySheet(sum);
-      wb.SheetNames.push('家庭汇总');
+      XLSX.utils.book_append_sheet(wb, buildSummarySheet(sum), '家庭汇总');
+      XLSX.utils.book_append_sheet(wb, buildFamilyMonthDetailSheet(allRecs, S.templates), '家庭明细');
       XLSX.writeFile(wb, `家庭财务_${S.year}年${S.month}月.xlsx`);
     } else {
-      if (!S.trends) S.trends = await API.trends(S.year);
-      const t = S.trends;
-      const data = [['月份','总资产','总负债','净资产','总收入','总支出','结余']];
-      for (let m = 1; m <= 12; m++) {
-        const i = m - 1;
-        data.push([m+'月', t.totalAssets[i], t.totalLiab[i], t.netWorth[i], t.totalIncome[i], t.totalExpense[i], t.totalIncome[i]-t.totalExpense[i]]);
-      }
-      const ws = XLSX.utils.aoa_to_sheet(data);
-      const wb = XLSX.utils.book_new();
-      wb.Sheets['年度汇总'] = ws; wb.SheetNames = ['年度汇总'];
+      // 全年导出: 年度财务总结 + 年度收入支出 + 年度家庭明细 + 月度趋势 (4 sheets)
+      const t = (S.trends && S.trends.year === S.year) ? S.trends : await API.trends(S.year);
+      const y = (S.yearly && S.yearly.year === S.year) ? S.yearly : await API.yearly(S.year);
+      const cf = (S.yearlyCf && S.yearlyCf.year === S.year) ? S.yearlyCf : await API.yearlyCashflow(S.year);
+      S.trends = t; S.yearly = y; S.yearlyCf = cf;
+      // 12月记录作为年末资产负债快照
+      const decRecs = await API.records(S.year, 12, '');
+      XLSX.utils.book_append_sheet(wb, buildYearlySummarySheet(y), '年度财务总结');
+      XLSX.utils.book_append_sheet(wb, buildYearlyCashflowSheet(cf), '年度收入支出');
+      XLSX.utils.book_append_sheet(wb, buildFamilyYearDetailSheet(decRecs, cf, S.templates), '年度家庭明细');
+      XLSX.utils.book_append_sheet(wb, buildTrendsSheet(t), '月度趋势');
       XLSX.writeFile(wb, `家庭财务_${S.year}年全年.xlsx`);
     }
     toast('导出成功');
-  } catch(e) { toast('导出失败') }
+  } catch(e) { console.error(e); toast('导出失败: ' + (e.message||'')) }
 };
 
+// 个人 sheet: 资产负债表 + 月度收支明细
 function buildSheet(recs, templates) {
   const map = {};
   recs.forEach(r => { map[r.section+'|'+r.category+'|'+r.item_name] = r.amount });
   const rows = [['家庭资产负债表','',''],['分类','项目','金额']];
-  let totalAssets = 0;
+  let totalAssets = 0, totalLiab = 0;
   BAL_CATS.forEach(cat => {
     const items = templates.filter(t => t.section === 'balance' && t.category === cat);
     let subTotal = 0;
@@ -872,9 +881,9 @@ function buildSheet(recs, templates) {
       rows.push([CAT[cat], t.item_name, val]);
     });
     rows.push(['', CAT[cat]+'小计', subTotal]);
-    if (cat !== 'mortgage' && cat !== 'other_debt') totalAssets += subTotal;
+    if (cat === 'mortgage' || cat === 'other_debt') totalLiab += subTotal;
+    else totalAssets += subTotal;
   });
-  const totalLiab = (map['balance|mortgage|房贷']||0) + Object.keys(map).filter(k=>k.startsWith('balance|other_debt|')).reduce((s,k)=>s+map[k],0);
   rows.push(['','资产合计', totalAssets]);
   rows.push(['','负债合计', totalLiab]);
   rows.push(['','净资产', totalAssets - totalLiab]);
@@ -895,22 +904,182 @@ function buildSheet(recs, templates) {
   });
   rows.push(['','本月结余', totalIncome - totalExpense]);
   if (totalIncome > 0) rows.push(['','储蓄率', Math.round((totalIncome-totalExpense)/totalIncome*100)+'%']);
-  return XLSX.utils.aoa_to_sheet(rows);
+  return setCols(XLSX.utils.aoa_to_sheet(rows), [14, 20, 14]);
 }
 
+// 家庭汇总 sheet: 资产/负债/净资产 + 收入/支出/结余 + 储蓄率
 function buildSummarySheet(s) {
   const rows = [
-    ['家庭财务汇总','',''],
-    ['项目','金额'],
-    ['现金', s.cash], ['投资', s.investment], ['实物资产', s.physical],
-    ['资产合计', s.totalAssets],
-    ['房贷', s.mortgage], ['其他负债', s.other_debt],
-    ['负债合计', s.totalLiab],
-    ['净资产', s.netWorth],
+    [`家庭财务汇总 (${S.year}年${S.month}月)`, '', ''],
+    ['项目', '金额', ''],
+    ['现金', s.cash, ''],
+    ['投资', s.investment, ''],
+    ['实物资产', s.physical, ''],
+    ['资产合计', s.totalAssets, ''],
+    ['房贷', s.mortgage, ''],
+    ['其他负债', s.other_debt, ''],
+    ['负债合计', s.totalLiab, ''],
+    ['净资产', s.netWorth, ''],
     [],
-    ['收入', s.income], ['支出', s.expense], ['结余', s.surplus]
+    ['收入', s.income, ''],
+    ['支出', s.expense, ''],
+    ['结余', s.surplus, '']
   ];
-  return XLSX.utils.aoa_to_sheet(rows);
+  if (s.income > 0) rows.push(['储蓄率', Math.round(s.surplus/s.income*100)+'%', '']);
+  return setCols(XLSX.utils.aoa_to_sheet(rows), [16, 14, 10]);
+}
+
+// 家庭明细 sheet (当月两人合计): 资产负债明细 + 现金流明细
+function buildFamilyMonthDetailSheet(records, templates) {
+  const agg = {};
+  (records || []).forEach(r => {
+    if (!agg[r.section]) agg[r.section] = {};
+    if (!agg[r.section][r.category]) agg[r.section][r.category] = {};
+    if (!agg[r.section][r.category][r.item_name]) agg[r.section][r.category][r.item_name] = 0;
+    agg[r.section][r.category][r.item_name] += Number(r.amount);
+  });
+  const rows = [
+    [`家庭资产负债明细 (两人合计 ${S.year}年${S.month}月)`, '', ''],
+    ['分类', '项目', '金额']
+  ];
+  let totalAssets = 0, totalLiab = 0;
+  BAL_CATS.forEach(cat => {
+    const items = templates.filter(t => t.section === 'balance' && t.category === cat);
+    let subTotal = 0, catHas = false;
+    items.forEach(t => {
+      const val = (agg.balance && agg.balance[cat] && agg.balance[cat][t.item_name]) || 0;
+      subTotal += val;
+      if (val > 0) { catHas = true; rows.push([CAT[cat], t.item_name, val]); }
+    });
+    if (catHas) rows.push(['', CAT[cat]+'小计', subTotal]);
+    if (cat === 'mortgage' || cat === 'other_debt') totalLiab += subTotal;
+    else totalAssets += subTotal;
+  });
+  rows.push(['', '资产合计', totalAssets]);
+  rows.push(['', '负债合计', totalLiab]);
+  rows.push(['', '净资产', totalAssets - totalLiab]);
+  rows.push([]);
+  rows.push([`家庭收支明细 (两人合计 ${S.year}年${S.month}月)`, '', '']);
+  rows.push(['分类', '项目', '金额']);
+  let totalIncome = 0, totalExpense = 0;
+  FLOW_CATS.forEach(cat => {
+    const items = templates.filter(t => t.section === 'cashflow' && t.category === cat);
+    let subTotal = 0, catHas = false;
+    items.forEach(t => {
+      const val = (agg.cashflow && agg.cashflow[cat] && agg.cashflow[cat][t.item_name]) || 0;
+      subTotal += val;
+      if (val > 0) { catHas = true; rows.push([CAT[cat], t.item_name, val]); }
+    });
+    if (catHas) rows.push(['', CAT[cat]+'小计', subTotal]);
+    if (cat === 'income') totalIncome = subTotal; else totalExpense = subTotal;
+  });
+  rows.push(['', '本月结余', totalIncome - totalExpense]);
+  if (totalIncome > 0) rows.push(['', '储蓄率', Math.round((totalIncome-totalExpense)/totalIncome*100)+'%']);
+  return setCols(XLSX.utils.aoa_to_sheet(rows), [14, 20, 14]);
+}
+
+// 年度财务总结 sheet: 项目/年初/年末/变化
+function buildYearlySummarySheet(y) {
+  const ch = y.changes;
+  const sumLiabB = y.beginning.mortgage + y.beginning.other_debt;
+  const sumLiabE = y.ending.mortgage + y.ending.other_debt;
+  const rows = [
+    [`${S.year}年 年度财务总结`, '', '', ''],
+    ['项目', '年初', '年末', '变化'],
+    ['现金', y.beginning.cash, y.ending.cash, ch.cash],
+    ['投资资产', y.beginning.investment, y.ending.investment, ch.investment],
+    ['实物资产', y.beginning.physical, y.ending.physical, ch.physical],
+    ['总资产', y.beginning.totalAssets, y.ending.totalAssets, ch.totalAssets],
+    ['负债', sumLiabB, sumLiabE, -(ch.totalLiab)],
+    ['净资产', y.beginning.netWorth, y.ending.netWorth, ch.netWorth]
+  ];
+  return setCols(XLSX.utils.aoa_to_sheet(rows), [14, 14, 14, 14]);
+}
+
+// 年度收入支出 sheet: 按项目分组全年累计
+function buildYearlyCashflowSheet(cf) {
+  const rows = [
+    [`${S.year}年 年度收入支出`, '', ''],
+    ['项目', '金额', '']
+  ];
+  const incomeItems = Object.entries(cf.income);
+  const expenseItems = Object.entries(cf.expense);
+  if (incomeItems.length === 0 && expenseItems.length === 0) {
+    rows.push(['暂无收入支出记录', '', '']);
+  } else {
+    if (incomeItems.length > 0) {
+      incomeItems.forEach(([name, amt]) => rows.push([name, amt, '']));
+      rows.push(['全年收入', cf.totalIncome, '']);
+    }
+    if (expenseItems.length > 0) {
+      expenseItems.forEach(([name, amt]) => rows.push([name, amt, '']));
+      rows.push(['全年支出', cf.totalExpense, '']);
+    }
+    rows.push(['全年净结余', cf.totalSurplus, '']);
+    if (cf.totalIncome > 0) rows.push(['储蓄率', Math.round(cf.totalSurplus/cf.totalIncome*100)+'%', '']);
+  }
+  return setCols(XLSX.utils.aoa_to_sheet(rows), [16, 14, 10]);
+}
+
+// 年度家庭明细 sheet: 12月年末资产负债快照 + 全年收支累计 (两人合计)
+function buildFamilyYearDetailSheet(decRecs, cf, templates) {
+  const agg = {};
+  (decRecs || []).forEach(r => {
+    if (r.section !== 'balance') return;
+    if (!agg[r.category]) agg[r.category] = {};
+    if (!agg[r.category][r.item_name]) agg[r.category][r.item_name] = 0;
+    agg[r.category][r.item_name] += Number(r.amount);
+  });
+  const rows = [
+    [`${S.year}年 年末资产负债快照 (12月 两人合计)`, '', ''],
+    ['分类', '项目', '年末值']
+  ];
+  let totalAssets = 0, totalLiab = 0;
+  BAL_CATS.forEach(cat => {
+    const items = templates.filter(t => t.section === 'balance' && t.category === cat);
+    let subTotal = 0, catHas = false;
+    items.forEach(t => {
+      const val = (agg[cat] && agg[cat][t.item_name]) || 0;
+      subTotal += val;
+      if (val > 0) { catHas = true; rows.push([CAT[cat], t.item_name, val]); }
+    });
+    if (catHas) rows.push(['', CAT[cat]+'小计', subTotal]);
+    if (cat === 'mortgage' || cat === 'other_debt') totalLiab += subTotal;
+    else totalAssets += subTotal;
+  });
+  rows.push(['', '资产合计', totalAssets]);
+  rows.push(['', '负债合计', totalLiab]);
+  rows.push(['', '净资产', totalAssets - totalLiab]);
+  rows.push([]);
+  rows.push([`${S.year}年 全年收支累计 (两人合计)`, '', '']);
+  rows.push(['分类', '项目', '全年合计']);
+  const incomeItems = Object.entries(cf.income);
+  const expenseItems = Object.entries(cf.expense);
+  if (incomeItems.length === 0 && expenseItems.length === 0) {
+    rows.push(['暂无收支数据', '', '']);
+  } else {
+    if (incomeItems.length > 0) {
+      incomeItems.forEach(([name, amt]) => rows.push(['收入', name, amt]));
+      rows.push(['', '收入小计', cf.totalIncome]);
+    }
+    if (expenseItems.length > 0) {
+      expenseItems.forEach(([name, amt]) => rows.push(['支出', name, amt]));
+      rows.push(['', '支出小计', cf.totalExpense]);
+    }
+    rows.push(['', '全年结余', cf.totalSurplus]);
+    if (cf.totalIncome > 0) rows.push(['', '储蓄率', Math.round(cf.totalSurplus/cf.totalIncome*100)+'%']);
+  }
+  return setCols(XLSX.utils.aoa_to_sheet(rows), [14, 20, 14]);
+}
+
+// 月度趋势 sheet: 12个月的总资产/负债/净资产/收入/支出/结余
+function buildTrendsSheet(t) {
+  const rows = [['月份','总资产','总负债','净资产','总收入','总支出','结余']];
+  for (let m = 1; m <= 12; m++) {
+    const i = m - 1;
+    rows.push([m+'月', t.totalAssets[i], t.totalLiab[i], t.netWorth[i], t.totalIncome[i], t.totalExpense[i], t.totalIncome[i]-t.totalExpense[i]]);
+  }
+  return setCols(XLSX.utils.aoa_to_sheet(rows), [8, 14, 14, 14, 14, 14, 14]);
 }
 
 /* === Start === */
