@@ -100,8 +100,9 @@ header{display:flex;align-items:center;justify-content:space-between;padding:12p
 .input-row input.amt-input{width:120px;text-align:right;padding:6px 10px;border:1px solid var(--border);border-radius:4px;font-size:14px;font-weight:500}
 .input-row input.amt-input:focus{border-color:var(--accent)}
 .input-row .del-btn{font-size:18px;color:var(--text3);padding:4px 8px;cursor:pointer}
-.add-item{padding:8px 14px;font-size:13px;color:var(--accent);cursor:pointer}
-.add-item:active{color:#0C447C}
+.add-item{padding:10px 14px;font-size:13px;color:var(--accent);cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;background:var(--bg);border-top:1px dashed var(--border);font-weight:500}
+.add-item:active{background:#e6f1fb;color:#0C447C}
+.add-item::before{content:"+";font-size:18px;font-weight:600;line-height:1}
 .save-bar{position:sticky;bottom:56px;background:var(--card);border-top:1px solid var(--border);padding:12px 16px;z-index:50}
 .save-bar button{width:100%;padding:14px;background:var(--accent);color:#fff;border-radius:var(--r);font-size:15px;font-weight:600}
 .save-bar button:active{background:#0C447C}

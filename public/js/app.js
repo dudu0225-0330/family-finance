@@ -12,6 +12,7 @@ const S = {
   charts: {},
   yearly: null,
   yearlyCf: null,
+  dashMonth: null,  // 仪表盘独立显示月: 自动定位到最新有数据的月份
 };
 
 const CAT = {
@@ -69,7 +70,7 @@ async function init() {
   initTabs();
   initMonthSelector();
   S.templates = await API.templates();
-  await loadMonthData();
+  switchTab('dashboard');  // 走仪表盘专用路径: 自动定位最新有数据的月份
 }
 
 function initTabs() {
@@ -81,6 +82,20 @@ function initTabs() {
 function switchTab(tab) {
   S.tab = tab;
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  // 仪表盘模式: 禁用顶部月份选择器 (仪表盘总是显示最新有数据的月份)
+  const mb = $('month-btn');
+  if (tab === 'dashboard') {
+    mb.onclick = null;
+    mb.style.cursor = 'default';
+    mb.style.opacity = '0.85';
+    mb.querySelector('.arrow').style.display = 'none';
+  } else {
+    mb.onclick = () => $('month-dd').classList.toggle('hidden');
+    mb.style.cursor = 'pointer';
+    mb.style.opacity = '1';
+    mb.querySelector('.arrow').style.display = '';
+  }
+  updateMonthLabel();
   if (tab === 'dashboard') renderDashboard();
   else if (tab === 'trend') renderTrend();
   else if (tab === 'input') renderInput();
@@ -114,7 +129,14 @@ function changeYear(y) {
   // 异步拉新一年的趋势数据, 更新月份点的"有数据"标记
   API.trends(y).then(data => { S.trends = data; updateMonthGrid(); }).catch(()=>{});
 }
-function updateMonthLabel() { $('month-label').textContent = `${S.year}年${S.month}月` }
+function updateMonthLabel() {
+  const label = $('month-label');
+  if (S.tab === 'dashboard' && S.dashMonth) {
+    label.textContent = `最新数据 · ${S.year}年${S.dashMonth}月`;
+  } else {
+    label.textContent = `${S.year}年${S.month}月`;
+  }
+}
 function updateMonthGrid() {
   $('year-disp').textContent = S.year + '年';
   const grid = $('month-grid');
@@ -154,41 +176,73 @@ async function loadMonthData() {
 }
 
 /* === Dashboard === */
-function renderDashboard() {
-  const s = S.summary; if (!s) return;
-  const c = $('content');
-  let prev = null;
-  if (S.trends && S.month > 1) {
-    const idx = S.month - 1;
-    prev = { netWorth: S.trends.netWorth[idx-1], totalAssets: S.trends.totalAssets[idx-1], totalLiab: S.trends.totalLiab[idx-1] };
+function findLatestDataMonth() {
+  // 从当前月往前找, 第一个有数据的月份 (基于 S.trends)
+  if (!S.trends) return S.month;
+  const now = new Date();
+  const curMonth = Math.min(now.getMonth() + 1, 12);
+  for (let i = curMonth - 1; i >= 0; i--) {
+    if (S.trends.totalAssets[i] > 0 || S.trends.totalLiab[i] > 0 ||
+        S.trends.totalIncome[i] > 0 || S.trends.totalExpense[i] > 0) {
+      return i + 1;
+    }
   }
-  const dNet = prev ? s.netWorth - prev.netWorth : null;
-  c.innerHTML = `
-    <div class="net-worth-card">
-      <div class="label">家庭净资产</div>
-      <div class="value">¥${fmt(s.netWorth)}</div>
-      ${dNet !== null ? `<div class="delta">${dNet>=0?'▲ +':'▼ '}${fmt(Math.abs(dNet))} 较上月</div>` : ''}
-    </div>
-    <div class="sec-title">家庭资产</div>
-    <div class="card">
-      <div class="card-row"><span class="name">现金</span><span class="amt pos">${fmt(s.cash)}</span></div>
-      <div class="card-row"><span class="name">投资</span><span class="amt pos">${fmt(s.investment)}</span></div>
-      <div class="card-row"><span class="name">实物资产</span><span class="amt pos">${fmt(s.physical)}</span></div>
-      <div class="card-row total"><span class="name">资产合计</span><span class="amt pos">${fmt(s.totalAssets)}</span></div>
-    </div>
-    <div class="sec-title">家庭负债</div>
-    <div class="card">
-      <div class="card-row"><span class="name">房贷</span><span class="amt neg">${fmt(s.mortgage)}</span></div>
-      <div class="card-row"><span class="name">其他负债</span><span class="amt neg">${fmt(s.other_debt)}</span></div>
-      <div class="card-row total"><span class="name">负债合计</span><span class="amt neg">${fmt(s.totalLiab)}</span></div>
-    </div>
-    <div class="sec-title">本月现金流</div>
-    <div class="flow-grid">
-      <div class="flow-item income"><div class="lbl">收入</div><div class="val">${fmt(s.income)}</div></div>
-      <div class="flow-item expense"><div class="lbl">支出</div><div class="val">${fmt(s.expense)}</div></div>
-      <div class="flow-item surplus"><div class="lbl">结余</div><div class="val">${fmt(s.surplus)}</div></div>
-    </div>
-  `;
+  return curMonth;  // 全年都没数据 → 返回当前月
+}
+
+async function renderDashboard() {
+  const tabAtStart = S.tab;
+  const c = $('content');
+  c.innerHTML = '<div class="loading-spinner">加载中...</div>';
+  try {
+    // 加载 trends (用于找最新有数据的月份)
+    if (!S.trends || S.trends.year !== S.year) S.trends = await API.trends(S.year);
+    if (S.tab !== tabAtStart) return;
+
+    // 定位到最新有数据的月份
+    const dashMonth = findLatestDataMonth();
+    S.dashMonth = dashMonth;
+    updateMonthLabel();
+
+    // 加载该月的 summary (注意: 不写入 S.summary, 避免污染录入页/历史页)
+    const sum = await API.summary(S.year, dashMonth);
+    if (S.tab !== tabAtStart) return;
+
+    // 环比上月
+    let prev = null;
+    if (dashMonth > 1 && S.trends) {
+      const idx = dashMonth - 1;
+      prev = { netWorth: S.trends.netWorth[idx-1], totalAssets: S.trends.totalAssets[idx-1], totalLiab: S.trends.totalLiab[idx-1] };
+    }
+    const dNet = prev ? sum.netWorth - prev.netWorth : null;
+    const cashLabel = (dashMonth === S.month && dashMonth === new Date().getMonth() + 1) ? '本月' : `${dashMonth}月`;
+    c.innerHTML = `
+      <div class="net-worth-card">
+        <div class="label">家庭净资产 <span style="font-size:12px;opacity:.7;margin-left:6px">${cashLabel}</span></div>
+        <div class="value">¥${fmt(sum.netWorth)}</div>
+        ${dNet !== null ? `<div class="delta">${dNet>=0?'▲ +':'▼ '}${fmt(Math.abs(dNet))} 较上月</div>` : ''}
+      </div>
+      <div class="sec-title">家庭资产</div>
+      <div class="card">
+        <div class="card-row"><span class="name">现金</span><span class="amt pos">${fmt(sum.cash)}</span></div>
+        <div class="card-row"><span class="name">投资</span><span class="amt pos">${fmt(sum.investment)}</span></div>
+        <div class="card-row"><span class="name">实物资产</span><span class="amt pos">${fmt(sum.physical)}</span></div>
+        <div class="card-row total"><span class="name">资产合计</span><span class="amt pos">${fmt(sum.totalAssets)}</span></div>
+      </div>
+      <div class="sec-title">家庭负债</div>
+      <div class="card">
+        <div class="card-row"><span class="name">房贷</span><span class="amt neg">${fmt(sum.mortgage)}</span></div>
+        <div class="card-row"><span class="name">其他负债</span><span class="amt neg">${fmt(sum.other_debt)}</span></div>
+        <div class="card-row total"><span class="name">负债合计</span><span class="amt neg">${fmt(sum.totalLiab)}</span></div>
+      </div>
+      <div class="sec-title">${cashLabel}现金流</div>
+      <div class="flow-grid">
+        <div class="flow-item income"><div class="lbl">收入</div><div class="val">${fmt(sum.income)}</div></div>
+        <div class="flow-item expense"><div class="lbl">支出</div><div class="val">${fmt(sum.expense)}</div></div>
+        <div class="flow-item surplus"><div class="lbl">结余</div><div class="val">${fmt(sum.surplus)}</div></div>
+      </div>
+    `;
+  } catch(e) { console.error(e); c.innerHTML = '<div class="empty">加载失败</div>' }
 }
 
 /* === Trend === */
