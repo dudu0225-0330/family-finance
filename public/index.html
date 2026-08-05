@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>家庭财务管理</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,"Microsoft YaHei","Segoe UI",sans-serif;background:#f1efe8;min-height:100vh;display:flex;align-items:center;justify-content:center}
+.wrap{width:90%;max-width:380px}
+h1{text-align:center;font-size:24px;color:#2c2c2a;margin-bottom:6px;font-weight:600}
+.sub{text-align:center;font-size:14px;color:#888780;margin-bottom:40px}
+.field{margin-bottom:24px}
+.field label{display:block;font-size:13px;color:#888780;margin-bottom:8px}
+.field input{width:100%;padding:14px 16px;border:1px solid rgba(0,0,0,.15);border-radius:8px;font-size:16px;background:#fff;outline:none;-webkit-appearance:none}
+.field input:focus{border-color:#185FA5}
+.id-label{font-size:13px;color:#888780;margin-bottom:8px}
+.id-btns{display:flex;gap:12px}
+.id-btns button{flex:1;padding:16px;border:1px solid rgba(0,0,0,.15);border-radius:8px;background:#fff;font-size:15px;color:#2c2c2a;cursor:pointer;transition:background .15s}
+.id-btns button:active{background:#eef5fb;border-color:#185FA5}
+.err{color:#791f1f;font-size:13px;text-align:center;margin-top:16px;display:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>家庭财务管理</h1>
+<p class="sub">请输入密码登录</p>
+<div class="field">
+<label>访问密码</label>
+<input type="password" id="pwd" placeholder="输入密码" autocomplete="off">
+</div>
+<div class="id-label">选择身份</div>
+<div class="id-btns">
+<button id="b-zhu">我是猪猪</button>
+<button id="b-du">我是嘟嘟</button>
+</div>
+<p class="err" id="err"></p>
+</div>
+<script>
+if(localStorage.getItem('token'))location.href='app.html';
+async function login(user){
+const pwd=document.getElementById('pwd').value;
+const err=document.getElementById('err');
+err.style.display='none';
+if(!pwd){err.textContent='请输入密码';err.style.display='block';return}
+err.textContent='连接中...';err.style.display='block';
+try{
+  const res=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pwd})});
+  const d=await res.json();
+  if(d.error){err.textContent=d.error;err.style.display='block';return}
+  localStorage.setItem('token',d.token);
+  localStorage.setItem('user',user);
+  location.href='app.html';
+}catch(e){
+  err.textContent='网络错误：'+(e.message||'无法连接到服务器')+' 请确保 http://localhost:3000 可访问';
+  err.style.display='block';
+  console.error('登录请求失败:',e);
+}
+}
+document.getElementById('b-zhu').onclick=()=>login('猪猪');
+document.getElementById('b-du').onclick=()=>login('嘟嘟');
+document.getElementById('pwd').addEventListener('keydown',e=>{if(e.key==='Enter')login('猪猪')});
+</script>
+</body>
+</html>
