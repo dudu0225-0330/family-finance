@@ -369,7 +369,6 @@ async function renderInput() {
     html += '<div class="input-section"><h3>资产负债表</h3>';
     BAL_CATS.forEach(cat => {
       const items = balTpls.filter(t => t.category === cat);
-      if (items.length === 0) return;
       let rows = '';
       let total = 0;
       items.forEach(t => {
@@ -394,7 +393,6 @@ async function renderInput() {
     html += '<div class="input-section"><h3>月度收支</h3>';
     FLOW_CATS.forEach(cat => {
       const items = flowTpls.filter(t => t.category === cat);
-      if (items.length === 0) return;
       let rows = '';
       let total = 0;
       items.forEach(t => {
