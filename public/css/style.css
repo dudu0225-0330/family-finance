@@ -121,6 +121,19 @@ header{display:flex;align-items:center;justify-content:space-between;padding:12p
 .yearly-cell .yl{font-size:11px;color:var(--text2);margin-bottom:4px}
 .yearly-cell .yv{font-size:14px;font-weight:600}
 
+/* 年度总结表格 */
+.yearly-table{background:var(--card);border:1px solid var(--border);border-radius:var(--r-lg);overflow:hidden;margin-bottom:16px}
+.yearly-table .yt-head,.yearly-table .yt-row{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;border-bottom:1px solid var(--border)}
+.yearly-table .yt-head{background:#f7f5ee;font-weight:600}
+.yearly-table .yt-head .yt-c,.yearly-table .yt-row .yt-c{padding:10px 8px;font-size:13px;text-align:right}
+.yearly-table .yt-head .yt-c:first-child,.yearly-table .yt-row .yt-c:first-child{text-align:left}
+.yearly-table .yt-row.total{background:#faf8f0;font-weight:600}
+.yearly-table .yt-row:last-child{border-bottom:none}
+
+/* 年度收入支出表格 (2列) */
+.yearly-table.yt-2col .yt-head,
+.yearly-table.yt-2col .yt-row{grid-template-columns:1fr 1fr}
+
 /* Settings */
 .set-list{background:var(--card);border-radius:var(--r-lg);border:1px solid var(--border);overflow:hidden;margin-bottom:16px}
 .set-item{padding:14px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center}

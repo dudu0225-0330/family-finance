@@ -40,6 +40,7 @@ const API = {
   addTemplate(s,c,n){ return this.call('/api/templates',{method:'POST',body:JSON.stringify({section:s,category:c,item_name:n})}) },
   delTemplate(id){ return this.call(`/api/templates/${id}`,{method:'DELETE'}) },
   yearly(y){ return this.call(`/api/yearly/${y}`) },
+  yearlyCashflow(y){ return this.call(`/api/yearly-cashflow/${y}`) },
   changePwd(p){ return this.call('/api/password',{method:'POST',body:JSON.stringify({password:p})}) },
 };
 
@@ -89,12 +90,13 @@ function switchTab(tab) {
 /* === Month Selector === */
 function initMonthSelector() {
   $('month-btn').onclick = () => $('month-dd').classList.toggle('hidden');
-  $('year-prev').onclick = () => { S.year--; updateMonthGrid() };
-  $('year-next').onclick = () => { S.year++; updateMonthGrid() };
+  $('year-prev').onclick = () => { changeYear(S.year - 1) };
+  $('year-next').onclick = () => { changeYear(S.year + 1) };
   $('today-btn').onclick = () => {
     const now = new Date();
     S.year = now.getFullYear();
     S.month = now.getMonth() + 1;
+    S.trends = null; S.yearly = null; S.yearlyCf = null;
     updateMonthLabel();
     updateMonthGrid();
     $('month-dd').classList.add('hidden');
@@ -102,6 +104,14 @@ function initMonthSelector() {
   };
   updateMonthLabel();
   updateMonthGrid();
+}
+function changeYear(y) {
+  S.year = y;
+  S.yearly = null; S.yearlyCf = null;
+  updateMonthLabel();
+  updateMonthGrid();
+  // 异步拉新一年的趋势数据, 更新月份点的"有数据"标记
+  API.trends(y).then(data => { S.trends = data; updateMonthGrid(); }).catch(()=>{});
 }
 function updateMonthLabel() { $('month-label').textContent = `${S.year}年${S.month}月` }
 function updateMonthGrid() {
@@ -495,31 +505,64 @@ async function renderHistory() {
       </div>`;
     }
     html += '</div>';
-    if (!hasAny) html += '<div class="empty">暂无历史记录</div>';
+    if (!hasAny) html += '<div class="empty">暂无历史记录，先去录入页填点数据吧</div>';
 
-    // Yearly summary
-    if (hasAny) {
-      S.yearly = await API.yearly(S.year);
-      const y = S.yearly;
-      html += `
-        <div class="sec-title">年度总结</div>
-        <div class="yearly-card">
-          <h3>${S.year}年财务概览</h3>
-          <div class="yearly-grid">
-            <div class="yearly-cell"><div class="yl">年初净资产</div><div class="yv" style="color:${COLORS.purple}">¥${fmt(y.beginning.netWorth)}</div></div>
-            <div class="yearly-cell"><div class="yl">年末净资产</div><div class="yv" style="color:${COLORS.purple}">¥${fmt(y.ending.netWorth)}</div></div>
-            <div class="yearly-cell"><div class="yl">净增长</div><div class="yv" style="color:${y.changes.netWorth>=0?COLORS.teal:COLORS.coral}">${y.changes.netWorth>=0?'+':''}¥${fmt(y.changes.netWorth)}</div></div>
-          </div>
-          <div class="yearly-grid">
-            <div class="yearly-cell"><div class="yl">全年收入</div><div class="yv" style="color:${COLORS.teal}">¥${fmt(y.cashflow.income)}</div></div>
-            <div class="yearly-cell"><div class="yl">全年支出</div><div class="yv" style="color:${COLORS.red}">¥${fmt(y.cashflow.expense)}</div></div>
-            <div class="yearly-cell"><div class="yl">全年结余</div><div class="yv" style="color:${COLORS.purple}">¥${fmt(y.cashflow.surplus)}</div></div>
-          </div>
-        </div>
-      `;
+    // 年度总结
+    S.yearly = await API.yearly(S.year);
+    const y = S.yearly;
+    S.yearlyCf = await API.yearlyCashflow(S.year);
+    const cf = S.yearlyCf;
+
+    const ch = y.changes;
+    const fmtCh = (v) => {
+      const sign = v >= 0 ? '+' : '';
+      const color = v >= 0 ? COLORS.teal : COLORS.red;
+      return `<span style="color:${color}">${sign}¥${fmt(v)}</span>`;
+    };
+    const sumLiabBeginning = y.beginning.mortgage + y.beginning.other_debt;
+    const sumLiabEnding = y.ending.mortgage + y.ending.other_debt;
+
+    html += `<div class="sec-title">${S.year}年 · 年度财务总结</div>`;
+    html += `
+      <div class="yearly-table">
+        <div class="yt-head"><div class="yt-c">项目</div><div class="yt-c">年初</div><div class="yt-c">年末</div><div class="yt-c">变化</div></div>
+        <div class="yt-row"><div class="yt-c">现金</div><div class="yt-c">¥${fmt(y.beginning.cash)}</div><div class="yt-c">¥${fmt(y.ending.cash)}</div><div class="yt-c">${fmtCh(ch.cash)}</div></div>
+        <div class="yt-row"><div class="yt-c">投资资产</div><div class="yt-c">¥${fmt(y.beginning.investment)}</div><div class="yt-c">¥${fmt(y.ending.investment)}</div><div class="yt-c">${fmtCh(ch.investment)}</div></div>
+        <div class="yt-row"><div class="yt-c">实物资产</div><div class="yt-c">¥${fmt(y.beginning.physical)}</div><div class="yt-c">¥${fmt(y.ending.physical)}</div><div class="yt-c">${fmtCh(ch.physical)}</div></div>
+        <div class="yt-row total"><div class="yt-c">总资产</div><div class="yt-c">¥${fmt(y.beginning.totalAssets)}</div><div class="yt-c">¥${fmt(y.ending.totalAssets)}</div><div class="yt-c">${fmtCh(ch.totalAssets)}</div></div>
+        <div class="yt-row"><div class="yt-c">负债</div><div class="yt-c">¥${fmt(sumLiabBeginning)}</div><div class="yt-c">¥${fmt(sumLiabEnding)}</div><div class="yt-c">${fmtCh(-ch.totalLiab)}</div></div>
+        <div class="yt-row total"><div class="yt-c">净资产</div><div class="yt-c">¥${fmt(y.beginning.netWorth)}</div><div class="yt-c">¥${fmt(y.ending.netWorth)}</div><div class="yt-c">${fmtCh(ch.netWorth)}</div></div>
+      </div>
+    `;
+
+    // 年度收入支出
+    const incomeItems = Object.entries(cf.income);
+    const expenseItems = Object.entries(cf.expense);
+    html += `<div class="sec-title">${S.year}年 · 年度收入支出</div>`;
+    html += `<div class="yearly-table yt-2col">`;
+    html += `<div class="yt-head"><div class="yt-c">项目</div><div class="yt-c">金额</div></div>`;
+    if (incomeItems.length === 0 && expenseItems.length === 0) {
+      html += `<div class="yt-row"><div class="yt-c" style="grid-column:1/-1;text-align:center;color:#888">暂无收入支出记录</div></div>`;
+    } else {
+      if (incomeItems.length > 0) {
+        for (const [name, amt] of incomeItems) {
+          html += `<div class="yt-row"><div class="yt-c">${name}</div><div class="yt-c" style="color:${COLORS.teal}">¥${fmt(amt)}</div></div>`;
+        }
+        html += `<div class="yt-row total"><div class="yt-c">全年收入</div><div class="yt-c" style="color:${COLORS.teal}">¥${fmt(cf.totalIncome)}</div></div>`;
+      }
+      if (expenseItems.length > 0) {
+        for (const [name, amt] of expenseItems) {
+          html += `<div class="yt-row"><div class="yt-c">${name}</div><div class="yt-c" style="color:${COLORS.red}">¥${fmt(amt)}</div></div>`;
+        }
+        html += `<div class="yt-row total"><div class="yt-c">全年支出</div><div class="yt-c" style="color:${COLORS.red}">¥${fmt(cf.totalExpense)}</div></div>`;
+      }
+      const surplusColor = cf.totalSurplus >= 0 ? COLORS.purple : COLORS.red;
+      html += `<div class="yt-row total" style="background:#faf8f0"><div class="yt-c" style="font-weight:700">全年净结余</div><div class="yt-c" style="color:${surplusColor};font-weight:700">¥${fmt(cf.totalSurplus)}</div></div>`;
     }
+    html += `</div>`;
+
     c.innerHTML = html;
-  } catch(e) { c.innerHTML = '<div class="empty">加载失败</div>' }
+  } catch(e) { console.error(e); c.innerHTML = '<div class="empty">加载失败</div>' }
 }
 
 /* === Settings === */

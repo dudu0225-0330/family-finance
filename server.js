@@ -222,7 +222,11 @@ app.get('/api/yearly/:year', auth, async (req, res) => {
       beginning: jan,
       ending: dec,
       changes: {
-        cash: round(jan.cash - 0),
+        cash: round(dec.cash - jan.cash),
+        investment: round(dec.investment - jan.investment),
+        physical: round(dec.physical - jan.physical),
+        mortgage: round(dec.mortgage - jan.mortgage),
+        other_debt: round(dec.other_debt - jan.other_debt),
         netWorth: round(dec.netWorth - jan.netWorth),
         totalAssets: round(dec.totalAssets - jan.totalAssets),
         totalLiab: round(dec.totalLiab - jan.totalLiab)
@@ -232,6 +236,36 @@ app.get('/api/yearly/:year', auth, async (req, res) => {
         expense: round(totalExpense),
         surplus: round(totalIncome - totalExpense)
       }
+    });
+  } catch (e) {
+    res.status(500).json({ error: '服务器错误: ' + e.message });
+  }
+});
+
+app.get('/api/yearly-cashflow/:year', auth, async (req, res) => {
+  try {
+    const year = Number(req.params.year);
+    // 累计全年每项收入/支出
+    const { rows } = await query(
+      "SELECT section, category, item_name, SUM(amount) as total " +
+      "FROM records WHERE year=$1 AND section='cashflow' " +
+      "GROUP BY section, category, item_name ORDER BY section, category, item_name",
+      [year]
+    );
+    const income = {};
+    const expense = {};
+    let totalIncome = 0, totalExpense = 0;
+    for (const r of rows) {
+      const amt = round(Number(r.total));
+      if (r.category === 'income') { income[r.item_name] = amt; totalIncome += amt; }
+      else { expense[r.item_name] = amt; totalExpense += amt; }
+    }
+    res.json({
+      year,
+      income, expense,
+      totalIncome: round(totalIncome),
+      totalExpense: round(totalExpense),
+      totalSurplus: round(totalIncome - totalExpense)
     });
   } catch (e) {
     res.status(500).json({ error: '服务器错误: ' + e.message });
